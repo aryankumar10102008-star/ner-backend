@@ -5,3 +5,6 @@ pandas
 numpy
 joblib
 pydantic
+requests
+python-dotenv
+supabase
