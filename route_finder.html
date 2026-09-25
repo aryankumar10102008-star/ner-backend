@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>NER Smart Logistics — Route Risk Finder</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root{
+    --night: #0d1420;
+    --panel: #131c2b;
+    --line: #223049;
+    --ink: #e7edf5;
+    --ink-dim: #8ea0b8;
+    --teal: #35c9c1;
+    --teal-dim: #1e8a84;
+    --green: #4fd17c;
+    --amber: #f2b84b;
+    --red: #ef6b6b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--night); color:var(--ink);
+    font-family: -apple-system, "Segoe UI", Inter, sans-serif; }
+
+  #map { position:absolute; inset:0; z-index:0; }
+
+  #controls {
+    position:absolute; top:16px; left:16px; right:16px;
+    z-index:1000;
+    background: rgba(19,28,43,0.92);
+    backdrop-filter: blur(6px);
+    border:1px solid var(--line);
+    border-radius:12px;
+    padding:14px 16px;
+    display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+  }
+  #controls h1 {
+    font-size:15px; font-weight:600; margin:0 18px 0 2px;
+    color:var(--teal); white-space:nowrap;
+  }
+  .field { display:flex; flex-direction:column; gap:3px; flex:1; min-width:150px; }
+  .field label { font-size:11px; color:var(--ink-dim); }
+  .field input {
+    background:var(--night); border:1px solid var(--line); border-radius:8px;
+    color:var(--ink); padding:8px 10px; font-size:14px; outline:none;
+  }
+  .field input:focus { border-color:var(--teal-dim); }
+
+  #findBtn {
+    background:var(--teal); color:#06201e; border:none; border-radius:8px;
+    padding:10px 20px; font-size:14px; font-weight:600; cursor:pointer;
+    white-space:nowrap;
+  }
+  #findBtn:disabled { background:var(--teal-dim); color:#0a2b28; cursor:default; }
+  #findBtn:hover:not(:disabled) { background:#4bdcd3; }
+
+  #result {
+    position:absolute; bottom:16px; left:16px;
+    z-index:1000;
+    background: rgba(19,28,43,0.94);
+    border:1px solid var(--line);
+    border-radius:12px;
+    padding:14px 18px;
+    min-width:230px;
+    display:none;
+  }
+  #result.show { display:block; }
+  #result .status { font-size:12px; color:var(--ink-dim); margin-bottom:6px; }
+  #result .score { font-size:32px; font-weight:700; line-height:1; }
+  #result .score.green { color:var(--green); }
+  #result .score.amber { color:var(--amber); }
+  #result .score.red { color:var(--red); }
+  #result .cat { font-size:13px; margin-top:4px; }
+  #result .incident {
+    margin-top:10px; padding-top:10px; border-top:1px solid var(--line);
+    font-size:12px; color:var(--red);
+  }
+  #result .alt-note { margin-top:8px; font-size:11px; color:var(--ink-dim); }
+
+  #legend {
+    position:absolute; bottom:16px; right:16px; z-index:1000;
+    background: rgba(19,28,43,0.9); border:1px solid var(--line);
+    border-radius:10px; padding:8px 12px;
+    font-size:11px; color:var(--ink-dim);
+    display:flex; gap:12px;
+  }
+  #legend span { display:flex; align-items:center; gap:5px; }
+  #legend i { width:10px; height:10px; border-radius:50%; display:inline-block; }
+
+  #error {
+    position:absolute; top:80px; left:16px; z-index:1000;
+    background: rgba(239,107,107,0.14); border:1px solid var(--red);
+    color:#ffd9d9; border-radius:8px; padding:10px 14px; font-size:13px;
+    display:none; max-width:320px;
+  }
+  #error.show { display:block; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="controls">
+  <h1>NER Route Risk</h1>
+  <div class="field">
+    <label>From</label>
+    <input id="fromInput" type="text" placeholder="e.g. Guwahati" value="Guwahati">
+  </div>
+  <div class="field">
+    <label>To</label>
+    <input id="toInput" type="text" placeholder="e.g. Shillong" value="Shillong">
+  </div>
+  <button id="findBtn">Find safest route</button>
+</div>
+
+<div id="error"></div>
+
+<div id="result">
+  <div class="status">Recommended route</div>
+  <div class="score" id="scoreVal">--</div>
+  <div class="cat" id="scoreCat"></div>
+  <div class="incident" id="incidentNote" style="display:none;"></div>
+  <div class="alt-note" id="altNote" style="display:none;"></div>
+</div>
+
+<div id="legend">
+  <span><i style="background:var(--green)"></i>Low risk</span>
+  <span><i style="background:var(--amber)"></i>Moderate</span>
+  <span><i style="background:var(--red)"></i>High risk</span>
+</div>
+
+<script>
+const API_BASE = "http://localhost:8000";
+
+const map = L.map('map', { zoomControl:false }).setView([25.9, 91.8], 8);
+L.control.zoom({ position:'bottomleft' }).addTo(map);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors', maxZoom:19
+}).addTo(map);
+
+let routeLayers = [];
+let markerLayers = [];
+
+function clearMap(){
+  routeLayers.forEach(l => map.removeLayer(l));
+  markerLayers.forEach(l => map.removeLayer(l));
+  routeLayers = [];
+  markerLayers = [];
+}
+
+function riskColor(score){
+  if (score < 30) return getComputedStyle(document.documentElement).getPropertyValue('--green').trim();
+  if (score < 65) return getComputedStyle(document.documentElement).getPropertyValue('--amber').trim();
+  return getComputedStyle(document.documentElement).getPropertyValue('--red').trim();
+}
+function riskCategory(score){
+  if (score < 30) return { label:'Low risk — safe to travel', cls:'green' };
+  if (score < 65) return { label:'Moderate risk — proceed with caution', cls:'amber' };
+  return { label:'High risk — consider an alternative time or road', cls:'red' };
+}
+
+async function geocode(place){
+ const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(place)}&format=json&limit=1&countrycodes=in`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!data.length) throw new Error(`Couldn't find "${place}". Try a nearby town name.`);
+  return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), name: data[0].display_name };
+}
+
+function showError(msg){
+  const el = document.getElementById('error');
+  el.textContent = msg;
+  el.classList.add('show');
+}
+function hideError(){
+  document.getElementById('error').classList.remove('show');
+}
+
+async function findRoute(){
+  const btn = document.getElementById('findBtn');
+  const fromVal = document.getElementById('fromInput').value.trim();
+  const toVal = document.getElementById('toInput').value.trim();
+  if (!fromVal || !toVal) { showError('Enter both a start and destination.'); return; }
+
+  hideError();
+  document.getElementById('result').classList.remove('show');
+  btn.disabled = true;
+  btn.textContent = 'Finding safest route…';
+  clearMap();
+
+  try {
+    const [start, end] = await Promise.all([geocode(fromVal), geocode(toVal)]);
+
+    markerLayers.push(L.marker([start.lat, start.lng]).addTo(map).bindPopup(`Start: ${fromVal}`));
+    markerLayers.push(L.marker([end.lat, end.lng]).addTo(map).bindPopup(`Destination: ${toVal}`));
+
+    const apiUrl = `${API_BASE}/route-risk?start_lat=${start.lat}&start_lng=${start.lng}&end_lat=${end.lat}&end_lng=${end.lng}`;
+    const res = await fetch(apiUrl);
+    if (!res.ok) throw new Error('Route risk service is unreachable. Is risk_api.py running?');
+    const data = await res.json();
+
+    if (!data.routes || !data.routes.length) throw new Error('No drivable route found between these points.');
+
+    data.routes.forEach(route => {
+      const latlngs = route.coordinates.map(c => [c[1], c[0]]); // flip [lng,lat] -> [lat,lng]
+      const isRecommended = route === data.recommended;
+      const line = L.polyline(latlngs, {
+        color: riskColor(route.risk_score),
+        weight: isRecommended ? 6 : 4,
+        opacity: isRecommended ? 0.95 : 0.5,
+        dashArray: isRecommended ? null : '6 8'
+      }).addTo(map);
+      line.bindPopup(`Risk score: ${route.risk_score}${route.incident_reported ? ' — citizen report nearby' : ''}`);
+      routeLayers.push(line);
+    });
+
+    map.fitBounds(routeLayers[0].getBounds(), { padding:[60,60] });
+
+    const rec = data.recommended;
+    const cat = riskCategory(rec.risk_score);
+    document.getElementById('scoreVal').textContent = rec.risk_score;
+    document.getElementById('scoreVal').className = 'score ' + cat.cls;
+    document.getElementById('scoreCat').textContent = cat.label;
+
+    const incidentEl = document.getElementById('incidentNote');
+    if (rec.incident_reported){
+      incidentEl.style.display = 'block';
+      incidentEl.textContent = '⚠ A citizen-reported incident is affecting this route.';
+    } else {
+      incidentEl.style.display = 'none';
+    }
+
+    const altEl = document.getElementById('altNote');
+    if (data.routes.length > 1){
+      altEl.style.display = 'block';
+      altEl.textContent = `${data.routes.length - 1} alternate route(s) shown dashed.`;
+    } else {
+      altEl.style.display = 'block';
+      altEl.textContent = 'Only one drivable road exists between these points.';
+    }
+
+    document.getElementById('result').classList.add('show');
+
+  } catch (err) {
+    showError(err.message || 'Something went wrong finding this route.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Find safest route';
+  }
+}
+
+document.getElementById('findBtn').addEventListener('click', findRoute);
+[document.getElementById('fromInput'), document.getElementById('toInput')].forEach(inp => {
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') findRoute(); });
+});
+</script>
+</body>
+</html>
