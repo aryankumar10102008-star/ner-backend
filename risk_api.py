@@ -537,7 +537,17 @@ def nearby_incident(
     radius_km=5
 ):
 
-    for report in incident_reports:
+    result = (
+        supabase.table("active_incidents")
+        .select("lat, lng, incident_type, severity")
+        .eq("status", "Active")
+        .execute()
+    )
+
+    for report in result.data:
+
+        if report["lat"] is None or report["lng"] is None:
+            continue
 
         dist = (
             (
@@ -675,8 +685,16 @@ async def upload_incident(
 @app.get("/active-incidents")
 def get_active_incidents():
 
+    result = (
+        supabase.table("active_incidents")
+        .select("*")
+        .eq("status", "Active")
+        .order("created_at", desc=True)
+        .execute()
+    )
+
     return {
-        "incidents": incident_reports
+        "incidents": result.data
     }
 
 
